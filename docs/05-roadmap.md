@@ -40,7 +40,7 @@
 ## 待服务器抵达后（M5 部署日清单）
 1. 服务器开机，确认 Tailscale 在线、SSH 可达
 2. 交叉编译（`x86_64-unknown-linux-musl` 静态）或服务器端 `cargo build --release`
-3. 部署 agent（systemd）；**relay 部署至软路由**（OpenWrt：musl 静态二进制 + procd init 脚本，台账目录指向 tmpfs；PVE：Debian LXC + systemd），并配置双路探测（lan + tailscale）
+3. 部署 agent（systemd）；**relay 部署至新购 N100 软路由**（PVE + Debian LXC 或 OpenWrt，见 02 文档 4.2a 与 07 文档采购清单），并配置双路探测（lan + tailscale）
 4. 生产前端与隧道探针纳入 `agent.toml`
 5. 全链路演练：断网模拟离线 → 验证 critical 告警；断开 Tailscale 保持内网 → 验证「隧道断开」warning；恢复验证
 6. （可选）配置 UptimeRobot 兜底监控 relay `/status`
@@ -49,9 +49,8 @@
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| relay 与被监控服务器同机宕机 | 离线告警失效 | relay 放软路由（首选）/常开笔记本/VPS；外部 UptimeRobot 兜底 |
-| 软路由宕机 = 全家断网 | 告警无人送达 | 观察者失效固有边界，保留 UptimeRobot 兜底；软路由本身稳定性通常高于其他设备 |
-| 软路由闪存磨损 | 长期运行损坏 eMMC/TF | relay 台账放 tmpfs + 周期快照；OpenWrt 用 procd 托管 |
+| relay 与被监控服务器同机宕机 | 离线告警失效 | relay 放新购 N100 软路由（已定案）；外部 UptimeRobot 兜底 |
+| 软路由宕机 = 全家断网（主路由模式） | 告警无人送达 | 默认采用旁路网关模式降低耦合；观察者失效固有边界由 UptimeRobot 兜底 |
 | WSL 开发期与生产 Linux 行为差异 | 部署日返工 | 采集器统一走 sysinfo/journalctl 抽象；M3 起在 WSL 内跑 systemd 模式验证 |
 | Bark 官方服务不可用 | 告警延迟 | 端点可切换自建 Bark server；推送失败重试 + 日志 |
 | 小组件刷新受 iOS 调度限制 | 状态显示延迟 ≤ 15~30 分钟 | 可接受（实时性由 Bark 告警保证）；后续可评估原生 App |

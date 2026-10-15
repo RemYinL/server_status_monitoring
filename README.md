@@ -21,6 +21,7 @@
 | [docs/04-alerting.md](docs/04-alerting.md) | 告警规则、分级与推送渠道 |
 | [docs/05-roadmap.md](docs/05-roadmap.md) | 项目规划、里程碑与任务分解 |
 | [docs/06-local-dev-testing.md](docs/06-local-dev-testing.md) | 本机（Windows + WSL）全栈调试方案 |
+| [docs/07-relay-hardware.md](docs/07-relay-hardware.md) | relay 主机硬件调研与采购决策（N100 软路由） |
 
 ## 仓库结构（规划）
 
