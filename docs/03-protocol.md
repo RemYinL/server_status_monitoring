@@ -50,7 +50,7 @@ agent → relay，`POST /report`，`Content-Type: application/json`，签名头 
 
 ## 2. 握手探测 ProbePacket
 
-relay → agent，`GET http://<agent-tailscale-ip>:9101/probe`，超时 5s。
+relay → agent，`GET http://<agent-ip>:9101/probe`，超时 5s。
 
 响应：
 ```json
@@ -58,6 +58,19 @@ relay → agent，`GET http://<agent-tailscale-ip>:9101/probe`，超时 5s。
 ```
 
 判定规则：HTTP 非 2xx、超时、TLS/连接失败均计为一次握手失败。
+
+### 双路探测（relay 部署于软路由/同局域网时）
+
+relay 配置中可同时声明两条探测路径，`lan`（内网直连 IP）与 `tailscale`（100.x 地址）。判定矩阵：
+
+| lan | tailscale | 结论 | 告警文案 |
+|---|---|---|---|
+| 通 | 通 | ONLINE | — |
+| 通 | 不通 | ONLINE_TUNNEL_DOWN | warning：「服务器在线，Tailscale 隧道断开」 |
+| 不通 | 不通 | OFFLINE | critical：「服务器离线」 |
+| 不通 | 通 | ONLINE_LAN_ANOMALY | warning：「内网直连异常（Tailscale 可达）」，通常表示网口/交换机问题 |
+
+单路部署时（relay 不在同局域网），退化为仅 tailscale 路径，矩阵第一、三行适用。
 
 ## 3. 离线判定状态机（时序）
 
