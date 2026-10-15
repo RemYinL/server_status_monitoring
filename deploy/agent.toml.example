@@ -1,0 +1,115 @@
+# =============================================================================
+# agent.toml.example —— ssm-agent 配置模板
+# =============================================================================
+# 用法：
+#   sudo cp deploy/agent.toml.example /etc/ssm-agent/agent.toml
+#   sudo chmod 644 /etc/ssm-agent/agent.toml      # 本文件不含秘密，644 即可
+#   sudo nano /etc/ssm-agent/agent.toml           # 至少改 host_id / relay_url
+#   sudo systemctl restart ssm-agent
+#
+# 秘密不写在这里！HMAC 共享密钥与 Bark key 全在 /etc/ssm-agent/secrets.toml（600）。
+# 字段名与默认值以 SPEC.md §6 为准。
+# =============================================================================
+
+# 本机唯一标识。relay 的 [[hosts]] 里必须有一条 host_id 与之**完全一致**，
+# 否则 relay 不认识这个上报方，双路探测也无法配置。
+# 建议值：能一眼看出是哪台机器，如 "kebei-prod-01"。
+host_id = "kebei-prod-01"
+
+# relay 的 POST /report 完整 URL（注意带 /report 路径）。
+# 生产（relay 与 agent 同内网）：http://192.168.1.2:9100/report
+# 生产（走 Tailscale）：        http://100.x.y.z:9100/report
+# 本机联调（relay 在 WSL）：     http://127.0.0.1:9100/report
+relay_url = "http://127.0.0.1:9100/report"
+
+# 上报周期（秒）。越小越灵敏但越费电/费流量。
+# 建议值 30；relay 的 heartbeat_timeout_sec 默认 90 = 3 个周期，改小要同步改 relay。
+report_interval_sec = 30
+
+# /probe 监听地址，供 relay 做握手探测（GET /probe，无鉴权，仅存活判定）。
+# 必须监听在 relay 可达的网卡上；只写 127.0.0.1 会导致 relay 永远握手失败 -> 误判离线。
+# 单机部署且 relay 不在同网段时也保留 0.0.0.0，由防火墙/tailnet 控制可达性。
+probe_listen = "0.0.0.0:9101"
+
+# 上报序号 seq 的持久化文件，重启后从文件续接，不从头再来（docs/03 §5）。
+# 由 systemd StateDirectory=ssm-agent 保证 /var/lib/ssm-agent 可写。
+seq_state_path = "/var/lib/ssm-agent/seq"
+
+# 上报失败的本地缓冲（JSONL 环形队列），网络恢复后按原始 sent_at 补发。
+# 同样位于 StateDirectory 下。
+buffer_path = "/var/lib/ssm-agent/buffer.jsonl"
+
+# 缓冲最多保留多少条。按 30s 周期算，100 条约覆盖 50 分钟断网。
+# 建议值 100；断网时间很长且不想丢事件时调到 500（注意内存与文件大小）。
+buffer_max = 100
+
+# 秘密文件路径。必须 600 且属主为 ssm-agent（install.sh 只创建目录，不生成 secret）。
+secrets_path = "/etc/ssm-agent/secrets.toml"
+
+# 需要采集磁盘使用率的挂载点白名单。逐个挂载点单独判定阈值。
+# 建议值 ["/"]；有独立数据盘时加 "/data"。不含子挂载点，写父挂载点即可。
+disks = ["/"]
+
+# -----------------------------------------------------------------------------
+# 服务存活探针（可多条 [[probes]]）
+# kind: http | tcp | process | tailscale
+# -----------------------------------------------------------------------------
+[[probes]]
+# 探针名字，会出现在 /status 的 services[] 与 Bark 文案里，建议短且无空格。
+name = "web-frontend"
+# 探针类型：http=发 GET 看状态码；tcp=连端口；process=查进程名；tailscale=解析 tailscale status。
+kind = "http"
+# 目标。http 填完整 URL；tcp 填 host:port；process 填进程名；tailscale 填本机 100.x 地址。
+target = "https://example.com"
+# 连续失败 N 次才告警（docs/01 F3），避免单周期抖动误报。建议值 2。
+fail_threshold = 2
+# 单次探测超时（秒）。http/tcp 生效。建议值 5，别超过 report_interval_sec。
+timeout_sec = 5
+
+# -----------------------------------------------------------------------------
+# 日志规则（可多条 [[log_rules]]）
+# -----------------------------------------------------------------------------
+[[log_rules]]
+# 规则名，用于告警去重键 id = "log:<name>:..."，改动它等于换了一条规则。
+name = "nginx-error"
+# 日志源：journald:<unit> 读某个 systemd 单元；file:<绝对路径> 尾随文件。
+source = "journald:nginx.service"
+# 正则（Rust regex 语法），大小写敏感；多分支用 |。注意括号要转义为 \\( 。
+pattern = "ERROR|upstream timed out"
+# 命中后的告警级别：info | warning | critical。
+# critical 会带 volume=8 + call=1 穿透静音并震动手机/手环，别随便用。
+level = "warning"
+# 同规则节流窗口（秒）。建议值 300（5 分钟），日志刷屏时防止告警风暴。
+throttle_sec = 300
+# 写进 summary 的匹配行数上限（只计数与摘要，不整段搬运日志）。
+max_lines = 3
+# 是否把原始日志行附进 summary。**默认 false = 脱敏**（docs/04 §2.3）。
+# 只有确认日志里不含 token/密码/手机号时才改 true。
+include_raw = false
+
+# -----------------------------------------------------------------------------
+# git 仓库跟踪（可多条 [[git_repos]]）：HEAD 变动推 info，脏工作区超 24h 也推
+# -----------------------------------------------------------------------------
+[[git_repos]]
+# 仓库名，出现在告警文案里。
+name = "kebei-web"
+# 仓库绝对路径（含 .git）。agent 用户必须对该目录有读权限，
+# 否则 git 会报 dubious ownership；必要时：
+#   sudo -u ssm-agent git -C /srv/kebei-web config --global --add safe.directory /srv/kebei-web
+path = "/srv/kebei-web"
+
+# -----------------------------------------------------------------------------
+# 资源阈值（docs/04 §2.4）
+# -----------------------------------------------------------------------------
+[thresholds]
+# 磁盘使用率百分比阈值，逐挂载点判定。建议值 85.0。
+disk_percent = 85.0
+# 磁盘告警节流（秒）。建议值 21600 = 6 小时，磁盘问题不会自愈，无需频繁提醒。
+disk_throttle_sec = 21600
+# CPU 百分比阈值。建议值 95.0。
+cpu_percent = 95.0
+# 内存百分比阈值。建议值 90.0。
+mem_percent = 90.0
+# CPU/内存必须**持续**超阈这么多秒才告警，避免瞬时峰值误报（docs/04 §2.4）。
+# 建议值 300 = 5 分钟。
+sustained_sec = 300

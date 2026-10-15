@@ -1,6 +1,6 @@
 # Rust
 /target
-Cargo.lock
+# NOTE: Cargo.lock is intentionally committed — this workspace produces binaries (ssm-agent, ssm-relay).
 **/*.rs.bk
 
 # Secrets & local config

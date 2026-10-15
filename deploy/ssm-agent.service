@@ -1,0 +1,53 @@
+# ssm-agent.service —— 被监控服务器上的采集/上报端
+#
+# 安装：见 deploy/install.sh 与 deploy/README.md
+#   sudo install -m 0644 deploy/ssm-agent.service /etc/systemd/system/ssm-agent.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ssm-agent
+#
+# 二进制与配置路径由 install.sh 与本文件共同约定，改一处必须改两处：
+#   二进制  /usr/local/bin/ssm-agent
+#   配置    /etc/ssm-agent/agent.toml
+#   秘密    /etc/ssm-agent/secrets.toml   (600, .gitignore 排除)
+#   状态    /var/lib/ssm-agent/           (seq + buffer.jsonl)
+
+[Unit]
+Description=SSM Agent - server status collector and reporter
+Documentation=file:///usr/local/share/doc/ssm/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ssm-agent --config /etc/ssm-agent/agent.toml
+
+# 专用非 root 用户（由 install.sh 创建）
+User=ssm-agent
+Group=ssm-agent
+
+# 日志规则要读 journald（journalctl -u <unit>），必须补 systemd-journal 组，
+# 否则 log_rules 全部匹配不到内容。
+SupplementaryGroups=systemd-journal
+
+Restart=always
+RestartSec=5
+
+# ---- 硬化 ----
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+# ProtectSystem=strict 会把整个文件系统挂成只读，用 StateDirectory 建目录并放开写入。
+# StateDirectory=ssm-agent -> /var/lib/ssm-agent，属主 ssm-agent:ssm-agent，0755。
+StateDirectory=ssm-agent
+ReadWritePaths=/var/lib/ssm-agent
+
+# 日志走 stderr，由 journald 收集
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

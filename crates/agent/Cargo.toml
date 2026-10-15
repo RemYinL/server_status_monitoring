@@ -1,0 +1,37 @@
+[package]
+name = "ssm-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ssm-agent: metrics/service/log/git collector and signed reporter"
+
+[[bin]]
+name = "ssm-agent"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+axum = "0.8.9"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.5.61", features = ["derive"] }
+hex = "0.4.3"
+hmac = "0.12.1"
+# SPEC §0.5 rule: rustls only, never native-tls/OpenSSL (the image has no libssl-dev).
+# reqwest 0.13 renamed the legacy `rustls-tls` feature to `rustls`; rustls is now the
+# *default* TLS backend and native-tls is opt-in. `json` enables the .json() helpers.
+reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "json"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.10.9"
+ssm-common = { path = "../common" }
+sysinfo = "0.36.1"
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["full"] }
+toml = "1.0.7"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

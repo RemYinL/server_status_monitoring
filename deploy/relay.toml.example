@@ -1,0 +1,96 @@
+# =============================================================================
+# relay.toml.example —— ssm-relay 配置模板
+# =============================================================================
+# 用法：
+#   sudo cp deploy/relay.toml.example /etc/ssm-relay/relay.toml
+#   sudo chmod 644 /etc/ssm-relay/relay.toml      # 本文件不含秘密，644 即可
+#   sudo nano /etc/ssm-relay/relay.toml           # 至少改 [[hosts]] 与探测地址
+#   sudo systemctl restart ssm-relay
+#
+# 秘密（status_token / shared_secret / Bark key）全在 /etc/ssm-relay/secrets.toml（600）。
+# 字段名与默认值以 SPEC.md §6 为准。
+#
+# ⚠️ db_path / snapshot_path 与 deploy/ssm-relay.service 的
+#    RuntimeDirectory=ssm-relay / StateDirectory=ssm-relay 是一套东西，见下方注释。
+# =============================================================================
+
+# HTTP 监听地址。relay 同时提供：
+#   POST /report   （agent 上报，HMAC 验签）
+#   GET  /status   （Bearer，供 iPhone 小组件）
+#   GET  /healthz  （无鉴权，供 UptimeRobot 兜底）
+# 0.0.0.0 表示监听全部网卡。安全边界交给 tailnet / 防火墙 / 反向代理，
+# 不要把 9100 直接暴露到公网明文。
+listen = "0.0.0.0:9100"
+
+# ---- 存储分层（docs/07 §3：台账放 tmpfs、快照落 SSD）-------------------------
+# 热台账：放 tmpfs，掉电即失、零磁盘磨损。
+# 这个路径由 ssm-relay.service 的 RuntimeDirectory=ssm-relay 提供（= /run/ssm-relay）。
+# **改这里就要同步改 unit 里的 RuntimeDirectory**，否则目录不存在会导致启动失败。
+db_path = "/run/ssm-relay/ledger.db"
+
+# 周期快照：放持久分区，relay 重启时从这里恢复台账，避免把「重启」误报成「离线」。
+# 这个路径由 ssm-relay.service 的 StateDirectory=ssm-relay 提供（= /var/lib/ssm-relay）。
+snapshot_path = "/var/lib/ssm-relay/ledger.snapshot.db"
+
+# 秘密文件路径。必须 600 且属主为 ssm-relay。
+secrets_path = "/etc/ssm-relay/secrets.toml"
+
+# -----------------------------------------------------------------------------
+# 离线判定参数（docs/03 §3）
+# -----------------------------------------------------------------------------
+# 距上次心跳超过这个秒数进入 SUSPECT。默认 90 = 3 × agent 的 report_interval_sec(30)。
+# 改 agent 上报周期时必须同步改这里，否则会持续误报。
+heartbeat_timeout_sec = 90
+# SUSPECT 后最多握手几次，全失败才判 OFFLINE 并推 critical。默认 3。
+handshake_retries = 3
+# 相邻两次握手的间隔（秒）。默认 10。整段判定耗时 ≈ (retries-1) × interval。
+handshake_interval_sec = 10
+# 单次握手（GET /probe）超时（秒）。默认 5，与 agent 侧 timeout_sec 保持同量级。
+handshake_timeout_sec = 5
+# 持续离线期间的重复提醒间隔（分钟）。默认 30；设 0 = 只提醒一次不重复。
+repeat_alert_min = 30
+# relay 启动后的宽限期，单位是「上报周期数」。默认 2。
+# 作用：relay 重启时台账还没热起来，先别急着判定离线（docs/03 §5）。
+startup_grace_periods = 2
+# 全局限流：同一 host 每分钟最多推几条 Bark，超出合并成摘要（docs/04 §5）。默认 5。
+rate_limit_per_min = 5
+# SQLite 快照落盘间隔（秒）。默认 300 = 5 分钟。
+# tmpfs 场景下这个值就是「最多丢几分钟数据」；调小会增加 SSD 写入。
+snapshot_interval_sec = 300
+# 补报过期阈值（秒）。agent 断网重连后补发的包，sent_at 超过这个时长的告警
+# **只入库不推送**，避免手机被一堆历史告警轰炸（docs/04 §5）。默认 300。
+lag_threshold_sec = 300
+
+# -----------------------------------------------------------------------------
+# 被监控主机与双路探测路径（docs/03 §2 判定矩阵）
+# 每条 [[hosts]] 至少一条 [[hosts.paths]]；两条（lan + tailscale）才能区分
+# 「整机离线」与「隧道断开 / 内网异常」。
+# URL 一律是 agent 的 /probe：http://<agent-ip>:9101/probe
+# -----------------------------------------------------------------------------
+[[hosts]]
+# 必须与对应 agent.toml 的 host_id **完全一致**（区分大小写）。
+host_id = "kebei-prod-01"
+
+# 路径 1：内网直连（relay 与服务器同局域网时才有意义，docs/07 §2 约束 2）
+[[hosts.paths]]
+# kind: lan | tailscale。仅用于判定矩阵归类与告警文案。
+kind = "lan"
+# agent 的内网固定 IP（建议 DHCP 静态绑定，避免 IP 漂移后误判离线）。
+url = "http://192.168.1.10:9101/probe"
+
+# 路径 2：Tailscale 隧道
+[[hosts.paths]]
+kind = "tailscale"
+# agent 的 Tailscale 100.x 地址。
+url = "http://100.64.0.10:9101/probe"
+
+# -----------------------------------------------------------------------------
+# 单路部署示例（relay 在云端 VPS，进不了内网）：
+# 只留 tailscale 一条路径，判定矩阵退化为第一、三行，
+# 无法区分「离线」与「隧道断开」——这是方案 ⑥ 的固有代价（docs/07 §2）。
+# -----------------------------------------------------------------------------
+# [[hosts]]
+# host_id = "kebei-prod-02"
+# [[hosts.paths]]
+# kind = "tailscale"
+# url = "http://100.64.0.11:9101/probe"

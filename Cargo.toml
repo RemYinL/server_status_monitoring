@@ -1,0 +1,12 @@
+[workspace]
+members = ["crates/common", "crates/agent", "crates/relay"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+authors = ["kebei"]
+repository = "https://github.com/RemYinL/server_status_monitoring"
+description = "Server status monitoring: agent collector + relay offline judge + iOS widget"

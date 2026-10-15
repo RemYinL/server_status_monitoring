@@ -1,0 +1,68 @@
+# ssm-relay.service —— 中转判定器
+#
+# 安装：见 deploy/install.sh 与 deploy/README.md
+#   sudo install -m 0644 deploy/ssm-relay.service /etc/systemd/system/ssm-relay.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ssm-relay
+#
+# ===========================================================================
+# 【关键】存储分层的自洽性（docs/07 §3：台账放 tmpfs、快照落 SSD）
+#
+#   RuntimeDirectory=ssm-relay  ->  /run/ssm-relay
+#       tmpfs，重启即失，无磁盘磨损。放**热台账**。
+#       => relay.toml 的 db_path           = /run/ssm-relay/ledger.db
+#
+#   StateDirectory=ssm-relay    ->  /var/lib/ssm-relay
+#       持久分区（SSD/eMMC）。放**周期性快照**，用于重启后恢复台账，避免误报离线。
+#       => relay.toml 的 snapshot_path     = /var/lib/ssm-relay/ledger.snapshot.db
+#
+#   两个目录都由 systemd 自动创建 + chown 给 User/Group，无需 install.sh 预建。
+#   改本文件的目录名或改 relay.toml.example 的路径时，**必须同步改另一处**，
+#   否则 relay 启动会因为 /run/ssm-relay 不存在而拿不到可写的 db_path。
+# ===========================================================================
+
+[Unit]
+Description=SSM Relay - heartbeat ledger, offline FSM and Bark alerter
+Documentation=file:///usr/local/share/doc/ssm/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ssm-relay --config /etc/ssm-relay/relay.toml
+
+# 专用非 root 用户（由 install.sh 创建）
+User=ssm-relay
+Group=ssm-relay
+
+Restart=always
+RestartSec=5
+
+# ---- tmpfs 台账 + SSD 快照 ----
+RuntimeDirectory=ssm-relay
+RuntimeDirectoryMode=0750
+StateDirectory=ssm-relay
+StateDirectoryMode=0750
+
+# ---- 硬化 ----
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+# ProtectSystem=strict 下 /run 与 /var 都是只读的，
+# RuntimeDirectory / StateDirectory 是 systemd 官方认可的白名单写入口径。
+ReadWritePaths=/run/ssm-relay /var/lib/ssm-relay
+
+# relay 需要出站访问 Bark（HTTPS 至 api.day.app 或自建 server），
+# 以及给 agent 的 /report 做入站应答 —— 但都不需要额外 capability。
+# 注意：**不要**打开入站端口映射，relay 只发起出站请求（docs/07 §3）。
+
+# 日志走 stderr，由 journald 收集
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
