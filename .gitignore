@@ -1,0 +1,19 @@
+# Rust
+/target
+Cargo.lock
+**/*.rs.bk
+
+# Secrets & local config
+secrets.toml
+*.local.toml
+.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Runtime data
+*.db
+*.db-journal
