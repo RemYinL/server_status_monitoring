@@ -14,6 +14,32 @@
 | `relay.toml.example` | `ssm-relay` 配置模板（含逐字段中文注释） |
 | `secrets.toml.example` | 密钥模板（**只有占位符**，真密钥必须手工填） |
 
+> **行尾格式提醒（Windows 用户必读）**
+> `install.sh`、两个 `.service` 与 TOML 配置都必须是 **LF** 行尾。
+> 仓库目前**没有** `.gitattributes`，也没有设置 `core.autocrlf`：若你的 Windows 全局设置了
+> `core.autocrlf=true`，这些文件在 Windows 上会被检出成 **CRLF**，scp 到 Linux 后会踩到两类坑：
+> - `install.sh` 报 `bad interpreter: /usr/bin/env bash^M`；
+> - systemd 会拒绝带 `^M` 的 `ExecStart`。
+>
+> 规避方式（任选其一，建议第一条）：
+>
+> ```bash
+> # ① 建议仓库维护者加 .gitattributes（写进仓库，一劳永逸）
+> #    *.sh text eol=lf
+> #    *.service text eol=lf
+> #    *.toml text eol=lf
+> #    *.example text eol=lf
+> #    *.js text eol=lf
+> #    *.md text eol=lf
+>
+> # ② 本机关闭换行转换，并重新检出
+> git config core.autocrlf false
+> git rm --cached -r . && git reset --hard
+>
+> # ③ 已 scp 到服务器才发现（就地修）
+> sudo sed -i 's/\r$//' /tmp/ssm-deploy/install.sh /tmp/ssm-deploy/*.service
+> ```
+
 ---
 
 ## 0. 部署拓扑与端口
