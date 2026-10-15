@@ -20,6 +20,7 @@ chrono = { version = "0.4.45", features = ["serde"] }
 clap = { version = "4.5.61", features = ["derive"] }
 hex = "0.4.3"
 hmac = "0.12.1"
+regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
 # SPEC §0.5 rule: rustls only, never native-tls/OpenSSL (the image has no libssl-dev).
 # reqwest 0.13 renamed the legacy `rustls-tls` feature to `rustls`; rustls is now the
 # *default* TLS backend and native-tls is opt-in. `json` enables the .json() helpers.
