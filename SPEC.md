@@ -379,19 +379,49 @@ ls -la target/release/ssm-agent target/release/ssm-relay
 
 ## 10. 与 T2/T3 的衔接
 
-T2 必须在 `collectors/mod.rs` 中为 T3 留出稳定的 trait 接口：
+T2 必须在 `collectors/mod.rs` 中为 T3 留出稳定的 trait 接口。
+
+⚠️ **注意：SPEC 早先版本的 `Collector::collect` 只返回 `Vec<Alert>`，这是不够的** —— `service_probe` 要产出
+`services[]`、`git_tracker` 要产出 `git[]`，都塞不进 `Vec<Alert>`。因此**以本版为准**：
 
 ```rust
+/// 一轮采集的产出。三个通道分别对应 ReportPacket 的三个可选数组。
+#[derive(Debug, Default, Clone)]
+pub struct CollectOutcome {
+    pub alerts: Vec<Alert>,
+    pub services: Vec<ServiceStatus>,
+    pub git: Vec<GitStatus>,
+}
+impl CollectOutcome {
+    pub fn empty() -> Self { Self::default() }
+    pub fn merge(&mut self, other: CollectOutcome) { /* 追加三个 vec */ }
+}
+
 #[async_trait]
 pub trait Collector: Send + Sync {
     /// 唯一标识，用于日志与告警 source
     fn name(&self) -> &'static str;
-    /// 每轮上报前调用；返回本轮产生的告警
-    async fn collect(&mut self, ctx: &CollectCtx) -> Vec<Alert>;
+    /// 每轮上报前调用一次
+    async fn collect(&mut self, ctx: &CollectCtx) -> CollectOutcome;
 }
 ```
 
-T2 定义 trait 与 `CollectCtx`（含 `host_id`、`uptime_sec`、`git_cache` 等共享状态），T3 实现四个高级采集器并注册进 `main.rs` 的采集器列表。**T2 负责在 `mod.rs` 暴露 trait，T3 只增文件不改 trait 签名**（若必须改，在返回结果里明确说明）。
+`CollectCtx` 承载跨采集器共享的只读状态，**字段名以此为准**（T2 定义，T3 只读不改）：
+
+```rust
+pub struct CollectCtx {
+    pub host_id: String,
+    pub uptime_sec: u64,
+    /// 单调递增的轮次号，T3 的节流/持续性判定可基于它
+    pub round: u64,
+    /// 本轮时间（便于测试注入）
+    pub now: chrono::DateTime<chrono::Utc>,
+}
+```
+
+T2 在 `main.rs` 里维护一个 `Vec<Box<dyn Collector>>` 并每轮 `merge` 所有 outcome；**T3 只需新增
+`collectors/*.rs` 并往这个 Vec 里 push 一行**。T3 **不得修改** trait 签名与 `CollectCtx` 字段（若必须改，
+在返回结果里明确说明原因）。
 
 ---
 
@@ -458,3 +488,74 @@ cargo build --release --target x86_64-unknown-linux-musl
 | M0 前 | 初版 | 派发 T0 用 |
 | M0 后 | 补 CLI 契约（§3）；补 `snapshot_path`（§6）；补 `store.rs` 快照行（§7）；补 §11 | T4 需要 CLI/路径自洽；T0 落地后回填真实版本与 API 坑 |
 | M0 后 | `reqwest` 特性名 `rustls-tls` → `rustls`（§0.5）；`GitRepoConfig` 补 `timeout_sec` | 与已解析版本对齐 |
+| M3 后 | 新增 §13「告警生命周期契约」 | **e2e 实测抓出 T1/T3 契约不一致**，见 §13 |
+
+---
+
+## 13. 告警生命周期契约（**e2e 实测抓出的跨 crate bug，勿再违反**）
+
+### 13.1 背景：这个 bug 长什么样
+
+首次跑通全链路 e2e 时，`relay.log` 的告警生命周期是这样的（探针目标**始终不可达**）：
+```
+seq=2  alerts=1   ← 服务探针告警出现
+seq=3  alerts=1
+seq=4  alerts=0   → REC「【服务不可用】web-frontend 探测失败」已恢复   ← 服务根本没恢复！
+seq=5..11 alerts=0   ← 此后永久沉默，服务一直挂着也不再提醒
+```
+三个用户可见的后果：
+1. **假恢复**：告警发出 4 秒后就告诉运维「已恢复」，而服务仍然挂着 —— 主动误导。
+2. **永久失声**：此后条件一直成立却再不提醒，服务挂一整天你也不知道。
+3. **语义错误**：`log_watcher` / `git_tracker` 也收到「已恢复」通知 —— 但「日志命中一次」「提交了一个 commit」是**点事件**，谈不上"恢复"。
+
+**根因**：T3 的采集器只在**条件成立的那一轮**（前沿）产出告警，之后不再产出；而 T1 的 relay 把「本轮 `alerts[]` 里没有它」判定为「条件已恢复」。双方各自的单测都通过，**只有跑真链路才会暴露**。
+
+### 13.2 契约：按 source 分两类，各自的产出规则
+
+| 类别 | `source` | 语义 | agent 产出规则 | relay 行为 |
+|---|---|---|---|---|
+| **条件型** | `service_probe`、`thresholds` | 一个**持续存在**的状态 | **条件存续期间，每一轮都必须出现在 `alerts[]` 里**（同一个稳定 `id`）。条件消失即不再出现。 | 出现在 `alerts[]` → 记为 active，**重复出现不重复推送**（去重）；**缺席且此前 active → 推「已恢复」并从 active 移除** |
+| **事件型** | `log_watcher`、`git_tracker` | 一个**已经发生**的点事件 | **只在事件发生的那一轮出现一次**（按各自的 `throttle_sec` 限频）。 | 出现 → 记为 active 并推送；**缺席 → 静默从 active 移除，绝不推「已恢复」**（点事件没有恢复语义） |
+| **relay 自生成** | `relay`（如「服务器离线」） | 条件型，由 relay 自己的 FSM 管理 | —— | 按 FSM 自行管理 active 与恢复通知 |
+
+**要点**：
+- **条件型告警由 agent 每轮重复上报，不靠 relay 去猜**。relay 的 `(source, title)` active 集合负责去重，所以不会造成推送风暴；这正是 docs/04 §5「同一告警在恢复前不重复推送」的实现前提。
+- **agent 不需要自己产出「已恢复」通知**（不要再用 `xxx:recovered` 这种 id 上报信息级恢复告警）——恢复通知由 relay 依据「条件型告警从 `alerts[]` 中消失」推导，agent 侧重复上报只会造成重复/混乱。
+- **`thresholds` 的持续超阈重复提醒**也属于条件型：每轮都上报即可，**由 relay 的 `rate_limit_per_min` / `repeat_alert_min` 决定是否要再响一次**；不要在 agent 侧用「每 sustained_sec 才报一次」的方式实现（那会产生假恢复窗口）。
+- 事件型告警的 `throttle_sec` 仍在 agent 侧生效（同一个日志规则 5 分钟内只报一次），这是**限频**，与"恢复"无关。
+
+### 13.3 必须有的回归测试- **agent 侧**（T3）：探针持续失败 N 轮 → 断言**每一轮** `alerts[]` 都含该告警；探针恢复 → 断言下一轮起不再含。`thresholds` 同理。
+- **agent 侧**（T3）：`log_watcher` 命中一次 → 断言**只有那一轮**含告警，后续轮次不含（事件型）。
+- **relay 侧**（T1）：条件型告警连续多轮出现 → 断言**只推 1 条**；随后缺席 → 断言推 1 条「已恢复」。
+- **relay 侧**（T1）：事件型告警出现后缺席 → 断言**没有任何「已恢复」推送**。
+- **e2e**：探针持续不可达 ≥ 6 轮 → 断言 `bark.log` 里**恰好 1 条**该探针的 critical、且**0 条**它的「已恢复」（因为条件一直没消失）。
+
+### 13.4 三条配套硬规则（同一 bug 类的其他实例，别再踩）
+
+**(1) 告警 `title` 必须稳定 —— 绝不能含逐轮变化的值。**
+relay 的 active 集合与恢复判定都用 `(source, title)` 做键。若 title 里放了实时数值，键每轮都变 →
+**同时产生「推送风暴」和「假恢复」**。
+- ❌ 反例：`【磁盘告警】/ 已用 90.0%`（使用率逐轮变 → 每轮都是"新告警"，且旧标题被判"已恢复"）
+- ✅ 正例：`【磁盘告警】/ 使用率超过 85.0%`（只含挂载点 + **配置阈值**这种常量），**实测值放 `summary`**
+
+**(2) `lag_threshold_sec`（过期告警只入库不推送）按「上报包的新鲜度」判定，不是按告警持续了多久。**
+```
+expired = now - packet.sent_at > lag_threshold_sec      // ✅ 正确
+expired = now - alert.first_seen > lag_threshold_sec    // ❌ 错误
+```
+理由：`docs/04` §5 的原意是「**补报包**里的过期告警只入库不推送」，针对的是**包本身是不是补报的**。
+而条件型告警的 `first_seen` 在条件存续期间**恒定**（§13.2 要求），拿它判过期会导致：
+**relay 重启（台账为空）+ 条件已持续 > `lag_threshold_sec`** → 该告警首轮即被判过期 →
+**只入库、永不推送**，此后无论条件持续多久都不再响（比假恢复更严重的「永久失声」）。
+- agent 侧行为是配套的：补发时 **`sent_at` 保留原值**、但用**发送当刻的时间戳重新签名**。
+  所以 `sent_at` 是判断「这个包是不是补报的」的可靠信号。
+
+**(3) 一个 `source` 可以同时产出条件型与事件型告警 —— 此时靠「产出节奏」而非分类来区分。**
+特例：`git_tracker` 有两条语义不同的告警：
+| 告警 `id` | 语义 | 产出节奏 | relay（source=git_tracker 事件型） |
+|---|---|---|---|
+| `git:<repo>:changed` | HEAD 变化 —— **点事件** | **只在该轮出现一次** | 推 1 条；缺席→静默移出 active，不推恢复 |
+| `git:<repo>:dirty` | 工作区脏 —— **实为条件型** | **脏的期间每轮都出现** | 推 1 条（active 去重）；提交干净后缺席→静默移出，**不推"已恢复"**；再脏→重新推 1 条 |
+
+这样**无需扩展协议**（不必给 `Alert` 加 lifecycle 字段），仅靠「条件型每轮上报 / 事件型只报一轮」
+这一条产出纪律 + source 级分类就自洽。**若将来出现更复杂的情况，再考虑给 `Alert` 加显式的 lifecycle 字段。**
