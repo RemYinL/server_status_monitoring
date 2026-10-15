@@ -17,3 +17,7 @@ Thumbs.db
 # Runtime data
 *.db
 *.db-journal
+
+# Test artifacts
+tests/widget/.tmp/
+

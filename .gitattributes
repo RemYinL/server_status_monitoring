@@ -1,0 +1,51 @@
+# 换行符策略 —— 全仓库统一 LF。
+#
+# 背景：开发在 Windows（core.autocrlf=true），运行/部署在 Linux。
+# 没有这份文件时，Windows 上克隆会把工作区文件签出成 CRLF，导致
+#   - deploy/*.sh 传到 Linux 后报 `bash^M: bad interpreter`
+#   - deploy/*.service 的 ExecStart 带 ^M 被 systemd 拒绝
+# 显式 `eol=lf` 的优先级高于 core.autocrlf，因此克隆/签出始终得到 LF。
+#
+# 索引里本来就全是 LF（i/lf），这份文件不改变已提交内容，只固定未来签出行为。
+* text=auto eol=lf
+
+# 明确标记为文本并强制 LF（可读 diff，跨平台可执行）
+*.sh             text eol=lf
+*.service        text eol=lf
+*.toml           text eol=lf
+*.example        text eol=lf
+*.rs             text eol=lf
+*.md             text eol=lf
+*.yml            text eol=lf
+*.yaml           text eol=lf
+*.json           text eol=lf
+*.jsonl          text eol=lf
+*.js             text eol=lf
+*.css            text eol=lf
+*.html           text eol=lf
+*.sql            text eol=lf
+Cargo.lock       text eol=lf
+Dockerfile       text eol=lf
+*.conf           text eol=lf
+
+# 明确声明为文本、不做内容归一化（本仓库当前没有这些文件，
+# 但避免将来 autocrlf 环境把它们误判为二进制）
+.gitignore       text
+.gitattributes   text
+
+# 二进制：禁止任何换行转换与 diff
+*.png            binary
+*.jpg            binary
+*.jpeg           binary
+*.gif            binary
+*.ico            binary
+*.pdf            binary
+*.zip            binary
+*.gz             binary
+*.db             binary
+*.db-journal     binary
+*.sqlite         binary
+*.sqlite3        binary
+*.woff           binary
+*.woff2          binary
+*.ttf            binary
